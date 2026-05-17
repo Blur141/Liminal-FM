@@ -3,6 +3,9 @@ module.exports = {
   content: ['./src/**/*.{js,ts,jsx,tsx,mdx}'],
   theme: {
     extend: {
+      screens: {
+        xs: '480px',
+      },
       fontFamily: {
         pixel: ['"Press Start 2P"', 'monospace'],
         mono: ['"Share Tech Mono"', 'monospace'],

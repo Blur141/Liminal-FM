@@ -560,7 +560,16 @@ export class MainScene extends Phaser.Scene {
   private setupCamera() {
     this.cameras.main.setBounds(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
     this.cameras.main.startFollow(this.playerContainer, true, 0.08, 0.08);
-    this.cameras.main.setZoom(1.5);
+    this.cameras.main.setZoom(this.calcZoom());
+  }
+
+  private calcZoom(): number {
+    const w = this.scale.width;
+    if (w < 400) return 0.8;
+    if (w < 600) return 1.0;
+    if (w < 900) return 1.2;
+    if (w < 1300) return 1.35;
+    return 1.5;
   }
 
   // ── Night overlay ───────────────────────────────────────────────────
@@ -621,7 +630,8 @@ export class MainScene extends Phaser.Scene {
     if (!this.sys.game.device.input.touch) return;
 
     const R = 52;
-    const jx = 90, jy = this.scale.height - 90;
+    // Extra bottom offset so joystick clears the iOS home-bar safe area (~34px)
+    const jx = 90, jy = this.scale.height - 110;
 
     const base = this.add.arc(jx, jy, R, 0, 360, false, 0xffffff, 0.08);
     base.setStrokeStyle(1.5, 0xffffff, 0.25).setScrollFactor(0).setDepth(900);
@@ -857,6 +867,7 @@ export class MainScene extends Phaser.Scene {
   setMuted(muted: boolean) { this.audio.setMuted(muted); }
   setVolume(vol: number) { this.audio.setMasterVolume(vol); }
   setZoom(zoom: number) { this.cameras.main.setZoom(zoom); }
+  getDefaultZoom(): number { return this.calcZoom(); }
   setUsername(name: string) {
     this.playerUsername = name;
     const tag = this.playerContainer.list[4] as Phaser.GameObjects.Text;
