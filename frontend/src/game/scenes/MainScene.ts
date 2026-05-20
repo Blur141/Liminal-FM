@@ -16,6 +16,11 @@ type OtherPlayerSprite = {
   data: RemotePlayer;
 };
 
+const CHAR_DIRS = ['Front', 'Back', 'Left', 'Right'] as const;
+const IDLE_FRAMES  = 16;
+const WALK_FRAMES  = 20;
+const CHAR_SCALE   = 0.1;  // 480 px → ~48 px world units
+
 // ── Helpers ───────────────────────────────────────────────────────────
 function hexDarken(color: number, factor: number): number {
   const r = Math.floor(((color >> 16) & 0xff) * factor);
@@ -35,6 +40,8 @@ export class MainScene extends Phaser.Scene {
   // Player
   private playerContainer!: Phaser.GameObjects.Container;
   private playerBody!: Phaser.GameObjects.Arc;
+  private playerSprite?: Phaser.GameObjects.Sprite;
+  private currentAnimKey = '';
 
   // Input
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
@@ -66,8 +73,10 @@ export class MainScene extends Phaser.Scene {
 
   // Public config (set by React before scene starts)
   username?: string;
+  characterId = 'assassin';
 
   // Callbacks → React
+  onReady?: () => void;
   onStationChanged?: (s: Station | null) => void;
   onNearStationChanged?: (s: Station | null) => void;
   onChatMessage?: (msg: ChatMessage) => void;
@@ -82,10 +91,28 @@ export class MainScene extends Phaser.Scene {
   constructor() { super({ key: 'MainScene' }); }
 
   // ── Lifecycle ───────────────────────────────────────────────────────
+  preload() {
+    const id  = this.characterId;
+    const base = `/characters/${id}`;
+
+    CHAR_DIRS.forEach(dir => {
+      const dl = dir.toLowerCase();
+      for (let i = 0; i < IDLE_FRAMES; i++) {
+        const f = String(i).padStart(3, '0');
+        this.load.image(`${id}-${dl}-idle-${f}`, `${base}/${dir} - Idle/${dir} - Idle_${f}.png`);
+      }
+      for (let i = 0; i < WALK_FRAMES; i++) {
+        const f = String(i).padStart(3, '0');
+        this.load.image(`${id}-${dl}-walk-${f}`, `${base}/${dir} - Walking/${dir} - Walking_${f}.png`);
+      }
+    });
+  }
+
   create() {
     this.cameras.main.setBackgroundColor(COLORS.ground);
 
     this.buildWorld();
+    this.createCharacterAnimations();
     this.createPlayer();
     this.setupInput();
     this.setupCamera();
@@ -104,6 +131,9 @@ export class MainScene extends Phaser.Scene {
     this.applyDayNight();
     // Update every real minute
     this.time.addEvent({ delay: 60_000, loop: true, callback: () => this.applyDayNight() });
+
+    this.drawCrystalFountain();
+    this.onReady?.();
   }
 
   update() {
@@ -169,11 +199,9 @@ export class MainScene extends Phaser.Scene {
       for (let py = 664; py < 1044; py += 40)
         g.fillRect(px + 2, py + 2, 36, 36);
 
-    // Fountain
-    g.fillStyle(0x1a2a4a); g.fillCircle(SPAWN_X, SPAWN_Y, 50);
-    g.fillStyle(0x2a4a8a); g.fillCircle(SPAWN_X, SPAWN_Y, 34);
-    g.fillStyle(0x4a8acc); g.fillCircle(SPAWN_X, SPAWN_Y, 18);
-    g.fillStyle(0xaaccff); g.fillCircle(SPAWN_X, SPAWN_Y, 7);
+    // Fountain base (crystal drawn after world in create())
+    g.fillStyle(0x16142a); g.fillCircle(SPAWN_X, SPAWN_Y, 64);
+    g.fillStyle(0x1e1c34); g.fillCircle(SPAWN_X, SPAWN_Y, 56);
 
     // ── Internet ruins (BL + BR bottom strip) ────────────────────────
     this.drawRuins(g);
@@ -280,30 +308,9 @@ export class MainScene extends Phaser.Scene {
     g.fillStyle(color, 0.05);
     g.fillTriangle(x - 40, by + height + 50, x + 40, by + height + 50, x, by + height - dh);
 
-    // Labels — skip for hidden stations
+    // Neon signs + awnings
     if (!station.hidden && !station.nightOnly) {
-      this.add.text(x, by - 20, station.name.toUpperCase(), {
-        fontFamily: '"Press Start 2P"',
-        fontSize: '7px',
-        color: station.accentHex,
-        stroke: '#000000',
-        strokeThickness: 3,
-        align: 'center',
-      }).setOrigin(0.5, 1).setDepth(6);
-
-      this.add.text(x, by + height + 14, station.desc, {
-        fontFamily: '"Share Tech Mono"',
-        fontSize: '11px',
-        color: station.accentHex + '88',
-        align: 'center',
-      }).setOrigin(0.5, 0).setDepth(6);
-    }
-
-    // Live indicator
-    if (!station.hidden && !station.nightOnly) {
-      const dot = this.add.arc(x + 80, by - 12, 4, 0, 360, false, 0xff4444);
-      dot.setDepth(7);
-      this.tweens.add({ targets: dot, alpha: { from: 1, to: 0.15 }, duration: 900, yoyo: true, repeat: -1 });
+      this.addStationSign(station, g, bx, by, width, height);
     }
 
     // Midnight club gets night-only labels stored for toggling
@@ -511,8 +518,11 @@ export class MainScene extends Phaser.Scene {
       g.fillStyle(COLORS.lampLight, 0.85);
       g.fillCircle(lx - 8, ly - 4, 4);
       g.fillCircle(lx + 8, ly - 4, 4);
-      g.fillStyle(0xffffaa, 0.04);
-      g.fillCircle(lx, ly, 44);
+      // Warm glow on ground
+      g.fillStyle(0xffee88, 0.07);
+      g.fillCircle(lx, ly, 60);
+      g.fillStyle(0xffdd66, 0.04);
+      g.fillCircle(lx, ly, 90);
     });
 
     // Plaza benches
@@ -523,27 +533,224 @@ export class MainScene extends Phaser.Scene {
     });
   }
 
+  // ── Neon sign builder ───────────────────────────────────────────────
+  private addStationSign(
+    station: Station,
+    g: Phaser.GameObjects.Graphics,
+    bx: number, by: number, width: number, height: number,
+  ) {
+    const { x, accentHex, color, id, buildingType } = station;
+
+    const signMap: Record<string, { text: string; sub?: string; subColor?: string }> = {
+      'jazz-cafe':      { text: 'LO-FI CAFE ☕' },
+      'rain-station':   { text: 'RADIO TOWER', sub: '• ON AIR •', subColor: '#ff5555' },
+      'neon-district':  { text: 'ECHO RECORDS ◎' },
+      'lofi-lounge':    { text: 'CHILLWAVE BAR' },
+      'desert-radio':   { text: 'VINYL SHOP ♪' },
+      'vaporwave-mall': { text: 'SUBWAY ↓' },
+      'midnight-club':  { text: 'THE MIDNIGHT HOUR' },
+    };
+    const def = signMap[id] ?? { text: station.name.toUpperCase() };
+
+    const CHAR_W = 7.8, PAD_X = 16, SIGN_H = 22;
+    const sw = Math.max(def.text.length * CHAR_W + PAD_X * 2, 80);
+    const sx = x - sw / 2;
+    const sy = by + 18; // just below the roof strip
+
+    const sg = this.add.graphics().setDepth(7);
+
+    // Dark backing panel
+    sg.fillStyle(0x010108, 0.97);
+    sg.fillRoundedRect(sx, sy, sw, SIGN_H, 3);
+    // Main border
+    sg.lineStyle(1.5, color, 0.85);
+    sg.strokeRoundedRect(sx, sy, sw, SIGN_H, 3);
+    // Outer glow border
+    sg.lineStyle(5, color, 0.06);
+    sg.strokeRoundedRect(sx - 2, sy - 2, sw + 4, SIGN_H + 4, 5);
+
+    // Neon text with glow shadow
+    this.add.text(x, sy + SIGN_H / 2, def.text, {
+      fontFamily: '"Press Start 2P"',
+      fontSize: '7px',
+      color: accentHex,
+      shadow: { offsetX: 0, offsetY: 0, color: accentHex, blur: 24, fill: true, stroke: true },
+      align: 'center',
+    }).setOrigin(0.5, 0.5).setDepth(8);
+
+    // Pulsing red live dot
+    const dot = this.add.arc(sx + sw - 8, sy + 8, 4, 0, 360, false, 0xff4444);
+    dot.setDepth(9);
+    this.tweens.add({ targets: dot, alpha: { from: 1, to: 0.1 }, duration: 850, yoyo: true, repeat: -1 });
+
+    // Sub-sign ("ON AIR" etc.)
+    if (def.sub) {
+      const subHex  = def.subColor ?? accentHex;
+      const subInt  = parseInt(subHex.replace('#', ''), 16);
+      const ssw     = Math.max(def.sub.length * 6.8 + 20, 60);
+      const ssy     = sy + SIGN_H + 4;
+      const ssg     = this.add.graphics().setDepth(7);
+      ssg.fillStyle(0x010108, 0.97);
+      ssg.fillRoundedRect(x - ssw / 2, ssy, ssw, 16, 2);
+      ssg.lineStyle(1.5, subInt, 0.9);
+      ssg.strokeRoundedRect(x - ssw / 2, ssy, ssw, 16, 2);
+      this.add.text(x, ssy + 8, def.sub, {
+        fontFamily: '"Press Start 2P"',
+        fontSize: '6px',
+        color: subHex,
+        shadow: { offsetX: 0, offsetY: 0, color: subHex, blur: 18, fill: true },
+        align: 'center',
+      }).setOrigin(0.5, 0.5).setDepth(8);
+    }
+
+    // Awning for storefront building types
+    if (['cafe', 'apartment', 'mall'].includes(buildingType)) {
+      const awningY = by + height - 54;
+      const light   = hexDarken(color, 0.55);
+      const dark2   = hexDarken(color, 0.25);
+      const stripeW = 14;
+      const stripes = Math.ceil(width / stripeW);
+      for (let i = 0; i < stripes; i++) {
+        const asx = bx + i * stripeW;
+        const asw = Math.min(stripeW, bx + width - asx);
+        g.fillStyle(i % 2 === 0 ? color : dark2, 0.8);
+        g.fillRect(asx, awningY, asw, 18);
+      }
+      g.fillStyle(light, 1);
+      g.fillRect(bx, awningY, width, 4);
+      for (let i = 0; i < stripes; i++) {
+        g.fillStyle(i % 2 === 0 ? color : dark2, 0.65);
+        g.fillCircle(bx + stripeW * (i + 0.5), awningY + 18, stripeW / 2 + 1);
+      }
+    }
+
+    // Station genre label below building
+    this.add.text(x, by + height + 10, station.desc, {
+      fontFamily: '"Share Tech Mono"',
+      fontSize: '10px',
+      color: accentHex + '66',
+      align: 'center',
+    }).setOrigin(0.5, 0).setDepth(6);
+  }
+
+  // ── Crystal fountain ────────────────────────────────────────────────
+  private drawCrystalFountain() {
+    const cx = SPAWN_X, cy = SPAWN_Y;
+    const g  = this.add.graphics().setDepth(5);
+
+    // Stone rings
+    g.fillStyle(0x18152a); g.fillCircle(cx, cy, 62);
+    g.fillStyle(0x201c38); g.fillCircle(cx, cy, 54);
+    g.fillStyle(0x1a1830, 0.9); g.fillCircle(cx, cy, 46);
+
+    // Groove lines
+    [50, 42, 34].forEach(r => {
+      g.lineStyle(1, 0x3a2a66, 0.4);
+      g.strokeCircle(cx, cy, r);
+    });
+
+    // Purple water glow
+    g.fillStyle(0x5522aa, 0.1); g.fillCircle(cx, cy, 46);
+
+    // Helper: draw one small crystal
+    const mini = (dx: number, dy: number, h: number) => {
+      g.fillStyle(0x8844cc, 0.4);
+      g.fillTriangle(cx+dx-4, cy+dy+6, cx+dx+4, cy+dy+6, cx+dx, cy+dy-h);
+      g.fillStyle(0xcc88ff, 0.55);
+      g.fillTriangle(cx+dx-2, cy+dy+4, cx+dx+2, cy+dy+4, cx+dx, cy+dy-h+2);
+      g.fillStyle(0xffffff, 0.18);
+      g.fillTriangle(cx+dx, cy+dy+2, cx+dx+1, cy+dy-4, cx+dx, cy+dy-h+4);
+    };
+    [[-18,10,10],[18,10,10],[0,-20,13],[-11,-8,9],[11,-8,9]].forEach(([dx,dy,h]) => mini(dx,dy,h));
+
+    // Central crystal
+    g.fillStyle(0x8833bb, 0.55);
+    g.fillTriangle(cx-13, cy+10, cx+13, cy+10, cx, cy-44);
+    g.fillStyle(0xbb66ee, 0.8);
+    g.fillTriangle(cx-8,  cy+8,  cx+8,  cy+8,  cx, cy-42);
+    g.fillStyle(0xdd99ff, 0.65);
+    g.fillTriangle(cx-4,  cy+4,  cx+4,  cy+4,  cx, cy-40);
+    // Face highlight
+    g.fillStyle(0xffffff, 0.22);
+    g.fillTriangle(cx-3, cy+2, cx+1, cy-8, cx-1, cy-36);
+    // Tip
+    g.fillStyle(0xcc80ff, 0.8); g.fillCircle(cx, cy-44, 8);
+    g.fillStyle(0xffffff, 0.95); g.fillCircle(cx, cy-45, 3);
+
+    // Animated pulse rings
+    ([0, 1100] as const).forEach((delay, i) => {
+      const ring = this.add.arc(cx, cy-44, 14, 0, 360, false, [0xcc80ff, 0xaa55ff][i], 0);
+      ring.setStrokeStyle(i === 0 ? 2 : 1.5, [0xcc80ff, 0xaa55ff][i], 1).setDepth(6);
+      this.tweens.add({
+        targets: ring,
+        scaleX: { from: 0.3, to: 2.8 }, scaleY: { from: 0.3, to: 2.8 },
+        alpha:  { from: 0.9, to: 0 },
+        duration: 2400, delay, repeat: -1, ease: 'Sine.easeOut',
+      });
+    });
+
+    // Ambient ground glow
+    const ag = this.add.graphics().setDepth(4);
+    ag.fillStyle(0x7733bb, 0.055); ag.fillCircle(cx, cy, 85);
+    ag.fillStyle(0xaa55ff, 0.04); ag.fillCircle(cx, cy-12, 65);
+  }
+
+  // ── Character animations ────────────────────────────────────────────
+  private createCharacterAnimations() {
+    const id = this.characterId;
+    CHAR_DIRS.forEach(dir => {
+      const dl = dir.toLowerCase();
+
+      this.anims.create({
+        key: `${id}-${dl}-idle`,
+        frames: Array.from({ length: IDLE_FRAMES }, (_, i) => ({
+          key: `${id}-${dl}-idle-${String(i).padStart(3, '0')}`,
+        })),
+        frameRate: 8,
+        repeat: -1,
+      });
+
+      this.anims.create({
+        key: `${id}-${dl}-walk`,
+        frames: Array.from({ length: WALK_FRAMES }, (_, i) => ({
+          key: `${id}-${dl}-walk-${String(i).padStart(3, '0')}`,
+        })),
+        frameRate: 12,
+        repeat: -1,
+      });
+    });
+  }
+
   // ── Player ──────────────────────────────────────────────────────────
   private createPlayer() {
-    const glow  = this.add.arc(0, 0, 16, 0, 360, false, 0xffffff, 0.07);
-    const shadow= this.add.arc(2, 4, 9,  0, 360, false, 0x000000, 0.35);
-    const body  = this.add.arc(0, 0, 9,  0, 360, false, 0xc780ff);
-    const inner = this.add.arc(0, 0, 4,  0, 360, false, 0xffffff, 0.4);
-    const name  = this.add.text(0, -24, this.username ?? 'Wanderer', {
+    const id = this.characterId;
+    const shadow = this.add.arc(2, 6, 10, 0, 360, false, 0x000000, 0.28);
+
+    const sprite = this.add.sprite(0, 0, `${id}-front-idle-000`);
+    sprite.setScale(CHAR_SCALE);
+    sprite.play(`${id}-front-idle`);
+    this.playerSprite = sprite;
+
+    // Invisible arc kept so multiplayer color updates still have a target
+    const body  = this.add.arc(0, 0, 1, 0, 360, false, 0xc780ff, 0);
+    this.playerBody = body;
+
+    const name = this.add.text(0, -36, this.username ?? 'Wanderer', {
       fontFamily: '"Share Tech Mono"', fontSize: '10px',
       color: '#c780ff', stroke: '#000000', strokeThickness: 3, align: 'center',
     }).setOrigin(0.5, 1);
 
-    this.playerContainer = this.add.container(SPAWN_X, SPAWN_Y, [glow, shadow, body, inner, name]);
+    this.playerContainer = this.add.container(SPAWN_X, SPAWN_Y, [shadow, sprite, body, name]);
     this.playerContainer.setDepth(10);
-    this.playerBody = body;
+  }
 
-    this.tweens.add({
-      targets: glow,
-      scaleX: { from: 1, to: 1.6 }, scaleY: { from: 1, to: 1.6 },
-      alpha: { from: 0.07, to: 0 },
-      duration: 1800, yoyo: true, repeat: -1,
-    });
+  private playCharAnim(dir: string, moving: boolean) {
+    const id  = this.characterId;
+    const key = `${id}-${dir}-${moving ? 'walk' : 'idle'}`;
+    if (this.currentAnimKey !== key) {
+      this.currentAnimKey = key;
+      this.playerSprite?.play(key, true);
+    }
   }
 
   // ── Input ───────────────────────────────────────────────────────────
@@ -678,9 +885,9 @@ export class MainScene extends Phaser.Scene {
 
     this.multiplayer.onWorldInit = (data) => {
       this.playerColor = data.playerColor;
-      const colorInt = parseInt(data.playerColor.replace('#', ''), 16);
-      this.playerBody.setFillStyle(colorInt);
-      (this.playerContainer.list[4] as Phaser.GameObjects.Text).setColor(data.playerColor);
+      // Update nametag color (last item in container)
+      const nameTag = this.playerContainer.list[this.playerContainer.list.length - 1] as Phaser.GameObjects.Text;
+      nameTag.setColor(data.playerColor);
       this.playerContainer.setPosition(data.spawnX, data.spawnY);
       data.players.filter(p => p.id !== data.playerId).forEach(p => this.addRemotePlayer(p));
       this.onPlayersUpdate?.(this.otherPlayers.size + 1);
@@ -819,10 +1026,21 @@ export class MainScene extends Phaser.Scene {
     const ny = Phaser.Math.Clamp(this.playerContainer.y + vy * delta, 10, WORLD_HEIGHT - 10);
     this.playerContainer.setPosition(nx, ny);
 
-    if (vx < 0) this.lastDirection = 'left';
-    else if (vx > 0) this.lastDirection = 'right';
-    else if (vy < 0) this.lastDirection = 'up';
-    else if (vy > 0) this.lastDirection = 'down';
+    const moving = vx !== 0 || vy !== 0;
+
+    // Determine facing direction for both direction tracking and sprite animation
+    if (vx < 0)       { this.lastDirection = 'left';  this.playCharAnim('left',  moving); }
+    else if (vx > 0)  { this.lastDirection = 'right'; this.playCharAnim('right', moving); }
+    else if (vy < 0)  { this.lastDirection = 'up';    this.playCharAnim('back',  moving); }
+    else if (vy > 0)  { this.lastDirection = 'down';  this.playCharAnim('front', moving); }
+    else              {
+      // Standing still — keep last direction
+      const dir = this.lastDirection === 'left'  ? 'left'
+                : this.lastDirection === 'right' ? 'right'
+                : this.lastDirection === 'up'    ? 'back'
+                : 'front';
+      this.playCharAnim(dir, false);
+    }
   }
 
   private interpolateOtherPlayers() {

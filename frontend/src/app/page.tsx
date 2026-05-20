@@ -14,6 +14,7 @@ export default function LandingPage() {
     const name = username.trim() || `Wanderer`;
     if (typeof window !== 'undefined') {
       localStorage.setItem('liminal-username', name);
+      localStorage.removeItem('liminal-character');
     }
     router.push('/game');
   };

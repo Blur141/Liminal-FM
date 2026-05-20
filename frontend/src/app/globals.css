@@ -36,11 +36,12 @@ body {
   overflow: hidden;
   user-select: none;
   -webkit-user-select: none;
-  /* Prevent double-tap zoom */
   touch-action: manipulation;
-  /* Prevent callout on long-press */
   -webkit-touch-callout: none;
   overscroll-behavior: none;
+  /* Thin custom scrollbars globally */
+  scrollbar-width: thin;
+  scrollbar-color: #2a2a42 transparent;
 }
 
 /* Prevent tap highlight flash on mobile */
@@ -122,6 +123,11 @@ canvas {
   50%       { opacity: 0; }
 }
 .blink { animation: blink 1s step-end infinite; }
+
+@keyframes vizBar {
+  0%   { transform: scaleY(0.35); }
+  100% { transform: scaleY(1); }
+}
 
 /* ── Range input (volume slider) ───────────────────────────────────── */
 input[type="range"] {
